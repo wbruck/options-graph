@@ -180,6 +180,11 @@
                    onkeydown="if(event.key==='Enter') loadOptions()">
             <button id="load-btn" onclick="loadOptions()">Load Options</button>
         </div>
+        <div class="search-bar">
+            <label for="investment-input" style="font-size:14px;color:#8b949e;">Investment $</label>
+            <input type="number" id="investment-input" placeholder="1000" min="1" step="100"
+                   style="width:120px;" oninput="renderCharts()">
+        </div>
         <div class="stock-info" id="stock-info"></div>
     </header>
 
@@ -201,6 +206,10 @@
     <div id="error-msg"></div>
 
     <div id="charts" class="content">
+        <div class="chart-container" id="profit-chart-container" style="display:none;">
+            <div class="chart-title">Profit / Loss at Expiration (at current stock price)</div>
+            <div id="profit-chart"></div>
+        </div>
         <div class="chart-container">
             <div class="chart-title">Option Premium by Strike</div>
             <div id="price-chart"></div>
@@ -303,6 +312,7 @@
         const data = activeTab === 'calls' ? optionsData.calls : optionsData.puts;
         const exps = optionsData.expirations;
 
+        renderProfitChart(data, exps);
         renderPriceChart(data, exps);
         renderIVChart(data, exps);
         renderOIChart(data, exps);
@@ -320,6 +330,75 @@
             yref: 'paper',
             line: { color: '#f0e68c', width: 1, dash: 'dash' },
         }];
+    }
+
+    function renderProfitChart(data, exps) {
+        const investment = parseFloat(document.getElementById('investment-input').value);
+        const container = document.getElementById('profit-chart-container');
+        if (!investment || investment <= 0 || !optionsData.currentPrice) {
+            container.style.display = 'none';
+            return;
+        }
+        container.style.display = 'block';
+        const S = optionsData.currentPrice;
+        const isCalls = activeTab === 'calls';
+
+        const traces = exps.map((exp, i) => {
+            const chain = data[exp] || [];
+            const strikes = [];
+            const profits = [];
+            const hoverTexts = [];
+
+            for (const opt of chain) {
+                const premium = opt.ask != null && opt.ask > 0 ? opt.ask : opt.lastPrice;
+                if (premium == null || premium <= 0) continue;
+
+                const costPerContract = premium * 100;
+                const contracts = Math.floor(investment / costPerContract);
+                if (contracts <= 0) continue;
+
+                const totalCost = contracts * costPerContract;
+                const intrinsic = isCalls
+                    ? Math.max(0, S - opt.strike)
+                    : Math.max(0, opt.strike - S);
+                const profit = contracts * intrinsic * 100 - totalCost;
+
+                strikes.push(opt.strike);
+                profits.push(profit);
+                hoverTexts.push(
+                    `Strike: $${opt.strike.toFixed(2)}<br>` +
+                    `Contracts: ${contracts}<br>` +
+                    `Cost: $${totalCost.toFixed(2)}<br>` +
+                    `Profit: $${profit.toFixed(2)}`
+                );
+            }
+
+            return {
+                x: strikes,
+                y: profits,
+                name: exp,
+                type: 'scatter',
+                mode: 'lines+markers',
+                marker: { size: 5 },
+                line: { color: COLORS[i % COLORS.length], width: 2 },
+                hovertemplate: '%{text}<extra>' + exp + '</extra>',
+                text: hoverTexts,
+            };
+        });
+
+        const layout = {
+            ...PLOTLY_LAYOUT,
+            yaxis: {
+                ...PLOTLY_LAYOUT.yaxis,
+                title: { text: 'Profit / Loss ($)', font: { color: '#8b949e' } },
+                zeroline: true,
+                zerolinecolor: '#f85149',
+                zerolinewidth: 2,
+            },
+            shapes: makeATMLine(),
+        };
+
+        Plotly.newPlot('profit-chart', traces, layout, PLOTLY_CONFIG);
     }
 
     function renderPriceChart(data, exps) {

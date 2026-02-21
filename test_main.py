@@ -5,7 +5,7 @@ import pandas as pd
 import pytest
 from fastapi.testclient import TestClient
 
-from main import _clean_value, _df_to_records, app
+from main import _clean_value, _df_to_records, compute_profit, app
 
 client = TestClient(app)
 
@@ -114,6 +114,109 @@ class TestDfToRecords:
                                     "impliedVolatility", "inTheMoney"])
         result = _df_to_records(df)
         assert result == []
+
+
+# ---------------------------------------------------------------------------
+# compute_profit tests
+# ---------------------------------------------------------------------------
+
+class TestComputeProfit:
+    def test_basic_call_itm(self):
+        """ITM call: stock at 160, strike 150, ask 10.50 -> intrinsic 10, profit per contract = (10-10.50)*100."""
+        chain = [{"strike": 150.0, "ask": 10.50, "lastPrice": 10.0}]
+        result = compute_profit(chain, current_price=160.0, investment=1100.0, option_type="calls")
+        assert len(result) == 1
+        r = result[0]
+        assert r["strike"] == 150.0
+        assert r["contracts"] == 1  # floor(1100 / 1050) = 1
+        assert r["totalCost"] == 1050.0
+        # profit = 1 * max(0, 160-150) * 100 - 1050 = 1000 - 1050 = -50
+        assert r["profit"] == -50.0
+
+    def test_basic_call_deep_itm(self):
+        """Deep ITM call with enough intrinsic to be profitable."""
+        chain = [{"strike": 100.0, "ask": 5.0, "lastPrice": 4.8}]
+        result = compute_profit(chain, current_price=110.0, investment=5000.0, option_type="calls")
+        r = result[0]
+        assert r["contracts"] == 10  # floor(5000 / 500) = 10
+        assert r["totalCost"] == 5000.0
+        # profit = 10 * max(0, 110-100) * 100 - 5000 = 10000 - 5000 = 5000
+        assert r["profit"] == 5000.0
+
+    def test_basic_call_otm(self):
+        """OTM call: stock at 140, strike 150 -> intrinsic 0, lose entire premium."""
+        chain = [{"strike": 150.0, "ask": 2.0, "lastPrice": 1.8}]
+        result = compute_profit(chain, current_price=140.0, investment=1000.0, option_type="calls")
+        r = result[0]
+        assert r["contracts"] == 5  # floor(1000 / 200) = 5
+        assert r["totalCost"] == 1000.0
+        # profit = 5 * 0 * 100 - 1000 = -1000
+        assert r["profit"] == -1000.0
+
+    def test_basic_put_itm(self):
+        """ITM put: stock at 140, strike 150, ask 12.0."""
+        chain = [{"strike": 150.0, "ask": 12.0, "lastPrice": 11.5}]
+        result = compute_profit(chain, current_price=140.0, investment=1200.0, option_type="puts")
+        r = result[0]
+        assert r["contracts"] == 1
+        assert r["totalCost"] == 1200.0
+        # profit = 1 * max(0, 150-140) * 100 - 1200 = 1000 - 1200 = -200
+        assert r["profit"] == -200.0
+
+    def test_basic_put_otm(self):
+        """OTM put: stock at 160, strike 150 -> intrinsic 0."""
+        chain = [{"strike": 150.0, "ask": 1.0, "lastPrice": 0.9}]
+        result = compute_profit(chain, current_price=160.0, investment=500.0, option_type="puts")
+        r = result[0]
+        assert r["contracts"] == 5
+        assert r["profit"] == -500.0
+
+    def test_multiple_strikes(self):
+        chain = [
+            {"strike": 100.0, "ask": 15.0, "lastPrice": 14.5},
+            {"strike": 110.0, "ask": 8.0, "lastPrice": 7.5},
+            {"strike": 120.0, "ask": 3.0, "lastPrice": 2.8},
+        ]
+        result = compute_profit(chain, current_price=112.0, investment=3000.0, option_type="calls")
+        assert len(result) == 3
+        assert result[0]["strike"] == 100.0
+        assert result[1]["strike"] == 110.0
+        assert result[2]["strike"] == 120.0
+
+    def test_falls_back_to_lastprice_when_ask_zero(self):
+        chain = [{"strike": 100.0, "ask": 0, "lastPrice": 5.0}]
+        result = compute_profit(chain, current_price=110.0, investment=1000.0, option_type="calls")
+        r = result[0]
+        assert r["contracts"] == 2  # floor(1000 / 500) = 2
+        assert r["totalCost"] == 1000.0
+
+    def test_falls_back_to_lastprice_when_ask_none(self):
+        chain = [{"strike": 100.0, "ask": None, "lastPrice": 5.0}]
+        result = compute_profit(chain, current_price=110.0, investment=1000.0, option_type="calls")
+        assert len(result) == 1
+        assert result[0]["contracts"] == 2
+
+    def test_skips_option_with_zero_premium(self):
+        chain = [{"strike": 100.0, "ask": 0, "lastPrice": 0}]
+        result = compute_profit(chain, current_price=110.0, investment=1000.0, option_type="calls")
+        assert result == []
+
+    def test_skips_option_when_too_expensive(self):
+        """If a single contract costs more than the investment, it should be skipped."""
+        chain = [{"strike": 100.0, "ask": 50.0, "lastPrice": 49.0}]
+        result = compute_profit(chain, current_price=155.0, investment=1000.0, option_type="calls")
+        # cost per contract = 50 * 100 = 5000 > 1000
+        assert result == []
+
+    def test_empty_chain(self):
+        result = compute_profit([], current_price=100.0, investment=1000.0)
+        assert result == []
+
+    def test_missing_ask_key_uses_lastprice(self):
+        chain = [{"strike": 100.0, "lastPrice": 5.0}]
+        result = compute_profit(chain, current_price=110.0, investment=1000.0, option_type="calls")
+        assert len(result) == 1
+        assert result[0]["contracts"] == 2
 
 
 # ---------------------------------------------------------------------------

@@ -64,6 +64,42 @@ async def get_options(ticker: str):
     }
 
 
+def compute_profit(chain: list[dict], current_price: float, investment: float, option_type: str = "calls") -> list[dict]:
+    """Compute profit/loss for each strike given an investment amount.
+
+    For each option in the chain, calculates how many contracts can be
+    purchased with the investment, and the profit at expiration assuming
+    the stock remains at current_price.
+
+    Returns a list of dicts with keys: strike, contracts, totalCost, profit.
+    """
+    results = []
+    for opt in chain:
+        premium = opt.get("ask") if opt.get("ask") and opt["ask"] > 0 else opt.get("lastPrice")
+        if not premium or premium <= 0:
+            continue
+
+        cost_per_contract = premium * 100
+        contracts = int(investment // cost_per_contract)
+        if contracts <= 0:
+            continue
+
+        total_cost = contracts * cost_per_contract
+        if option_type == "calls":
+            intrinsic = max(0.0, current_price - opt["strike"])
+        else:
+            intrinsic = max(0.0, opt["strike"] - current_price)
+        profit = contracts * intrinsic * 100 - total_cost
+
+        results.append({
+            "strike": opt["strike"],
+            "contracts": contracts,
+            "totalCost": round(total_cost, 2),
+            "profit": round(profit, 2),
+        })
+    return results
+
+
 def _clean_value(v):
     """Convert NaN/Inf to None for JSON serialization."""
     if isinstance(v, float) and (math.isnan(v) or math.isinf(v)):
